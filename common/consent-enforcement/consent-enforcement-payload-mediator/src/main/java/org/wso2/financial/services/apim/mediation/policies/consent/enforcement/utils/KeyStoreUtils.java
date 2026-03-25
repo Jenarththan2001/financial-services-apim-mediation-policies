@@ -20,41 +20,29 @@ package org.wso2.financial.services.apim.mediation.policies.consent.enforcement.
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.wso2.carbon.base.ServerConfiguration;
-import org.wso2.financial.services.apim.mediation.policies.consent.enforcement.constants.ConsentEnforcementConstants;
+import org.wso2.carbon.core.util.KeyStoreManager;
 
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.security.Key;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
-import java.security.cert.CertificateException;
-import java.util.Arrays;
 
 /**
  * Utility class for managing the keystore and retrieving the signing key.
+ * Uses Carbon KeyStoreManager which is HSM-aware - returns PKCS#11 backed
+ * keys when HSM is configured, or file-based keys otherwise.
  */
 public class KeyStoreUtils {
 
     private static final Log log = LogFactory.getLog(KeyStoreUtils.class);
-    private static ServerConfiguration serverConfigs = ServerConfiguration.getInstance();
 
-    private static final String keyStoreLocation = serverConfigs
-            .getFirstProperty(ConsentEnforcementConstants.KEYSTORE_LOCATION_TAG);
-    private static final char[] keyStorePassword = serverConfigs
-            .getFirstProperty(ConsentEnforcementConstants.KEYSTORE_PASSWORD_TAG).toCharArray();
-    private static final String keyAlias = serverConfigs
-            .getFirstProperty(ConsentEnforcementConstants.SIGNING_ALIAS_TAG);
-    private static final String keyPassword = serverConfigs
-            .getFirstProperty(ConsentEnforcementConstants.SIGNING_KEY_PASSWORD);
+    // Super tenant ID used for KeyStoreManager
+    private static final int SUPER_TENANT_ID = -1234;
 
     private static volatile Key key;
 
-
     /**
-     * Method to obtain signing key.
+     * Method to obtain signing key using Carbon KeyStoreManager.
+     * KeyStoreManager is HSM-aware and will return:
+     * - PKCS#11 backed key (P11PrivateKey) when HSM is configured
+     * - File-based key (RSAPrivateCrtKeyImpl) when HSM is not configured
      *
      * @return Key as an Object.
      */
@@ -63,43 +51,18 @@ public class KeyStoreUtils {
         if (key == null) {
             synchronized (ConsentEnforcementUtils.class) {
                 if (key == null) {
-                    try (FileInputStream is = new FileInputStream(getKeyStoreLocation())) {
-                        KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());
-                        keystore.load(is, getKeyStorePassword());
-                        key = keystore.getKey(getKeyAlias(), getKeyPassword().toCharArray());
-                    } catch (IOException | CertificateException | KeyStoreException | NoSuchAlgorithmException
-                             | UnrecoverableKeyException e) {
-                        log.error("Error occurred while retrieving private key from keystore ", e);
+                    log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
+                    try {
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        key = keyStoreManager.getDefaultPrivateKey();
+                        log.info("Signing key loaded successfully. Key type: " + key.getClass().getName());
+                    } catch (Exception e) {
+                        log.error("Error occurred while retrieving private key from KeyStoreManager", e);
                     }
                 }
             }
         }
         return key;
-    }
-
-    private static char[] getKeyStorePassword() {
-
-        return Arrays.copyOf(keyStorePassword, keyStorePassword.length);
-    }
-
-    private static String getKeyStoreLocation() {
-
-        return keyStoreLocation;
-    }
-
-    private static String getKeyAlias() {
-
-        return keyAlias;
-    }
-
-    private static String getKeyPassword() {
-
-        return keyPassword;
-    }
-
-    static void setServerConfiguration(ServerConfiguration config) {
-
-        serverConfigs = config;
     }
 
 }
