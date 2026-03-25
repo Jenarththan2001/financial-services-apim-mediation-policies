@@ -18,96 +18,81 @@
 
 package org.wso2.financial.services.apim.mediation.policies.jws.header.processing.handler.utils;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.SynapseException;
-import org.wso2.carbon.base.ServerConfiguration;
-import org.wso2.financial.services.apim.mediation.policies.jws.header.processing.handler.constants.JwsHandlerConstants;
+import org.wso2.carbon.core.util.KeyStoreManager;
 
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.util.Optional;
 
 /**
- * Utility to retrieve Server certificates.
+ * Utility to retrieve Server signing key and certificates.
+ * Uses Carbon KeyStoreManager which is HSM-aware - returns PKCS#11 backed
+ * keys when HSM is configured, or file-based keys otherwise.
  */
 public class ServerIdentityRetriever {
 
-    private static KeyStore keyStore = null;
-
-    // Internal KeyStore Password.
-    private static char[] keyStorePassword;
-
     private static final Log log = LogFactory.getLog(ServerIdentityRetriever.class);
 
-    static {
-        // Static Initialize Internal Keystore.
-        String keyStoreLocation = ServerConfiguration.getInstance()
-                .getFirstProperty(JwsHandlerConstants.KEYSTORE_LOCATION_CONF_KEY);
-        String keyStorePassword = ServerConfiguration.getInstance()
-                .getFirstProperty(JwsHandlerConstants.KEYSTORE_PASS_CONF_KEY);
+    // Super tenant ID used for KeyStoreManager
+    private static final int SUPER_TENANT_ID = -1234;
 
-        try {
-            ServerIdentityRetriever.keyStore = loadKeyStore(keyStoreLocation, keyStorePassword);
-            ServerIdentityRetriever.keyStorePassword = keyStorePassword.toCharArray();
-        } catch (SynapseException e) {
-            log.error("Unable to load InternalKeyStore", e);
-        }
-    }
+    // Cached signing key (loaded once)
+    private static volatile Key signingKey;
 
     /**
-     * Load the keystore when the location and password is provided.
+     * Returns the signing key using Carbon KeyStoreManager.
+     * KeyStoreManager is HSM-aware and will return:
+     * - PKCS#11 backed key (P11PrivateKey) when HSM is configured
+     * - File-based key when HSM is not configured
      *
-     * @param keyStoreLocation Location of the keystore
-     * @param keyStorePassword Keystore password
-     * @return Keystore as an object
-     */
-    public static KeyStore loadKeyStore(String keyStoreLocation, String keyStorePassword) {
-
-        KeyStore keyStore;
-
-        try (FileInputStream inputStream = new FileInputStream(keyStoreLocation)) {
-            keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            keyStore.load(inputStream, keyStorePassword.toCharArray());
-            return keyStore;
-        } catch (KeyStoreException e) {
-            throw new SynapseException("Error while retrieving aliases from keystore: " + keyStoreLocation, e);
-        } catch (IOException | CertificateException | NoSuchAlgorithmException e) {
-            throw new SynapseException("Error while loading keystore", e);
-        }
-    }
-
-    /**
-     * Returns the signing key based on the alias provided.
-     *
-     * @param alias Alias of the signing key to retrieve
-     * @return Optional<Key> The signing key as an Optional
+     * @param alias Alias is ignored - uses default primary key from KeyStoreManager
+     * @return Optional containing the signing key
      */
     public static Optional<Key> getSigningKey(String alias) {
+        Key localKey = signingKey;
 
-        if (StringUtils.isNotBlank(alias)) {
-            try {
-                // The requested key, or
-                // null if the given alias does not exist or does not identify a key-related entry.
-                return Optional.of(keyStore.getKey(alias, keyStorePassword));
-            } catch (KeyStoreException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
-                throw new SynapseException("Unable to retrieve certificate", e);
+        if (localKey == null) {
+            synchronized (ServerIdentityRetriever.class) {
+                localKey = signingKey;
+                if (localKey == null) {
+                    log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
+                    try {
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        localKey = keyStoreManager.getDefaultPrivateKey();
+                        signingKey = localKey;
+
+                        log.info("JWS signing key loaded successfully. Key type: " +
+                                localKey.getClass().getName());
+                    } catch (Exception e) {
+                        log.error("Error occurred while retrieving private key from KeyStoreManager", e);
+                        throw new SynapseException("Unable to retrieve signing key from KeyStoreManager", e);
+                    }
+                }
             }
         }
-
-        return Optional.empty();
+        return Optional.ofNullable(localKey);
     }
 
+    /**
+     * Returns the certificate from KeyStoreManager's primary keystore.
+     *
+     * @param alias Certificate alias to retrieve
+     * @return Certificate for the given alias
+     * @throws KeyStoreException if certificate cannot be retrieved
+     */
     public static Certificate getCertificate(String alias) throws KeyStoreException {
 
-        return keyStore.getCertificate(alias);
+        try {
+            KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+            KeyStore keyStore = keyStoreManager.getPrimaryKeyStore();
+            return keyStore.getCertificate(alias);
+        } catch (Exception e) {
+            throw new KeyStoreException("Unable to retrieve certificate from KeyStoreManager", e);
+        }
     }
 }
