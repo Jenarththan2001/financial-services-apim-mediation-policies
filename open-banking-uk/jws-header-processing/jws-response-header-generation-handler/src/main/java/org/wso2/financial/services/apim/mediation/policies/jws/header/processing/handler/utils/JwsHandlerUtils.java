@@ -51,7 +51,12 @@ import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.PrivateKey;
+import java.security.Provider;
+import java.security.Security;
+import java.security.Signature;
 import java.security.interfaces.ECPrivateKey;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +70,26 @@ import javax.xml.stream.XMLStreamException;
 public class JwsHandlerUtils {
 
     private static final Log log = LogFactory.getLog(JwsHandlerUtils.class);
+
+    /**
+     * PSS algorithm mapping: JWS algorithm name -> JCA algorithm name for SunPKCS11.
+     * Nimbus uses BouncyCastle naming (SHA256withRSAandMGF1) which doesn't work with HSM.
+     * SunPKCS11 requires standard JCA naming (SHA256withRSASSA-PSS).
+     */
+    private static final Map<String, String> PSS_ALGORITHM_MAP = new HashMap<>();
+    private static final Map<String, PSSParameterSpec> PSS_PARAM_MAP = new HashMap<>();
+
+    static {
+        // JWS alg -> JCA algorithm name for SunPKCS11
+        PSS_ALGORITHM_MAP.put("PS256", "SHA256withRSASSA-PSS");
+        PSS_ALGORITHM_MAP.put("PS384", "SHA384withRSASSA-PSS");
+        PSS_ALGORITHM_MAP.put("PS512", "SHA512withRSASSA-PSS");
+
+        // JWS alg -> PSS parameters (hash, MGF, salt length, trailer)
+        PSS_PARAM_MAP.put("PS256", new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+        PSS_PARAM_MAP.put("PS384", new PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1));
+        PSS_PARAM_MAP.put("PS512", new PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1));
+    }
 
     /**
      * Return JSON Error for SynapseHandler.
@@ -227,6 +252,19 @@ public class JwsHandlerUtils {
             JWSHeader jwsHeader = constructJWSHeader(signingKeyId, criticalParameters, signingAlgorithm);
             JWSObject jwsObject = constructJWSObject(jwsHeader, payloadString);
 
+            // Check if this is an HSM key with PSS algorithm - needs special handling
+            boolean isHSMKey = isHSMKey(privateKey);
+            boolean isPSSAlgorithm = isPSSAlgorithm(signingAlgorithm);
+
+            if (isHSMKey && isPSSAlgorithm) {
+                log.info("Bypassing Nimbus: HSM key detected with PSS algorithm (" +
+                        signingAlgorithm.getName() + "). Using JCA signing directly.");
+                try {
+                    return signWithHSMPSS(jwsHeader, jwsObject, payloadString, (PrivateKey) privateKey, signingAlgorithm);
+                } catch (Exception e) {
+                    throw new JOSEException("HSM PSS signing failed: " + e.getMessage(), e);
+                }
+            }
             if ("RSA".equals(privateKey.getAlgorithm())) {
                 // If the signing key is an RSA Key
                 signer = new RSASSASigner((PrivateKey) privateKey);
@@ -331,6 +369,144 @@ public class JwsHandlerUtils {
     public static String createDetachedJws(JWSHeader jwsHeader, Base64URL signature) {
 
         return jwsHeader.toBase64URL().toString() + ".." + signature.toString();
+    }
+
+    /**
+     * Checks if the private key is from an HSM (PKCS#11).
+     * HSM keys are typically P11Key or similar PKCS#11 wrapper classes.
+     *
+     * @param key The private key to check
+     * @return true if the key is from an HSM, false otherwise
+     */
+    private static boolean isHSMKey(Key key) {
+
+        if (key == null) {
+            return false;
+        }
+        String keyClassName = key.getClass().getName();
+        // P11Key is the base class for SunPKCS11 provider keys
+        // Also check for common HSM provider patterns
+        return keyClassName.contains("P11") ||
+                keyClassName.contains("PKCS11") ||
+                keyClassName.contains("HSM");
+    }
+
+    /**
+     * Checks if the JWS algorithm is a PSS-based algorithm.
+     * PSS algorithms (PS256, PS384, PS512) require special handling with HSM.
+     *
+     * @param algorithm The JWS algorithm
+     * @return true if the algorithm is PSS-based, false otherwise
+     */
+    private static boolean isPSSAlgorithm(JWSAlgorithm algorithm) {
+
+        if (algorithm == null) {
+            return false;
+        }
+        String algName = algorithm.getName();
+        return algName.startsWith("PS");
+    }
+
+    /**
+     * Signs a JWS using HSM with PSS algorithm, bypassing Nimbus library.
+     *
+     * Nimbus RSASSASigner uses BouncyCastle algorithm naming (e.g., "SHA256withRSAandMGF1")
+     * which is not compatible with SunPKCS11 provider. SunPKCS11 requires standard JCA
+     * naming (e.g., "SHA256withRSASSA-PSS").
+     *
+     * This method uses Java's Signature API directly with the HSM provider to perform
+     * PSS signing correctly.
+     *
+     * @param jwsHeader     The JWS header
+     * @param jwsObject     The JWS object (used for b64 check)
+     * @param payloadString The payload to sign
+     * @param privateKey    The HSM private key
+     * @param algorithm     The JWS algorithm (PS256, PS384, PS512)
+     * @return Detached JWS string (header..signature)
+     * @throws Exception if signing fails
+     */
+    private static String signWithHSMPSS(JWSHeader jwsHeader, JWSObject jwsObject,
+                                         String payloadString, PrivateKey privateKey,
+                                         JWSAlgorithm algorithm) throws Exception {
+
+        String algName = algorithm.getName();
+        String jcaAlgorithm = PSS_ALGORITHM_MAP.get(algName);
+        PSSParameterSpec pssParams = PSS_PARAM_MAP.get(algName);
+
+        if (jcaAlgorithm == null || pssParams == null) {
+            throw new JOSEException("Unsupported PSS algorithm: " + algName);
+        }
+
+        // Get the HSM provider from the key
+        Provider hsmProvider = getHSMProvider(privateKey);
+
+        if (hsmProvider == null) {
+            throw new JOSEException("Could not find SunPKCS11 provider for HSM PSS signing. " +
+                    "Ensure HSM is properly configured and SunPKCS11 provider is registered.");
+        }
+
+        if (log.isDebugEnabled()) {
+            log.debug("Using JCA algorithm: " + jcaAlgorithm + " with HSM provider: " + hsmProvider.getName());
+        }
+
+        // Create signature instance with HSM provider
+        Signature signature = Signature.getInstance(jcaAlgorithm, hsmProvider);
+
+        // Set PSS parameters
+        signature.setParameter(pssParams);
+
+        // Initialize with private key
+        signature.initSign(privateKey);
+
+        // Get signing input based on b64 header
+        byte[] signingInput;
+        if (isB64HeaderVerifiable(jwsObject)) {
+            // b64=true: header.base64(payload)
+            String combinedInput = jwsHeader.toBase64URL().toString() + "." +
+                    Base64URL.encode(payloadString).toString();
+            signingInput = combinedInput.getBytes(StandardCharsets.UTF_8);
+        } else {
+            // b64=false: header.payload (unencoded)
+            signingInput = getSigningInput(jwsHeader, payloadString);
+        }
+
+        // Sign
+        signature.update(signingInput);
+        byte[] signatureBytes = signature.sign();
+
+        // Create detached JWS (header..signature)
+        Base64URL signatureBase64 = Base64URL.encode(signatureBytes);
+        return createDetachedJws(jwsHeader, signatureBase64);
+    }
+
+    /**
+     * Get the SunPKCS11 provider associated with the HSM private key.
+     *
+     * @param privateKey the private key (expected to be a P11Key from HSM)
+     * @return the SunPKCS11 provider, or null if not found
+     */
+    private static Provider getHSMProvider(PrivateKey privateKey) {
+
+        // First, try to get the provider from the key's class if it's a P11Key
+        String keyClassName = privateKey.getClass().getName();
+        if (keyClassName.contains("P11Key") || keyClassName.contains("pkcs11")) {
+            // The key is from PKCS#11, find the corresponding provider
+            for (Provider provider : Security.getProviders()) {
+                if (provider.getName().startsWith("SunPKCS11")) {
+                    // Check if this provider supports the required algorithm
+                    if (provider.getService("Signature", "SHA256withRSASSA-PSS") != null) {
+                        return provider;
+                    }
+                }
+            }
+            // If no provider with RSASSA-PSS support found, return first SunPKCS11
+            for (Provider provider : Security.getProviders()) {
+                if (provider.getName().startsWith("SunPKCS11")) {
+                    return provider;
+                }
+            }
+        }
+        return null;
     }
 
 }
