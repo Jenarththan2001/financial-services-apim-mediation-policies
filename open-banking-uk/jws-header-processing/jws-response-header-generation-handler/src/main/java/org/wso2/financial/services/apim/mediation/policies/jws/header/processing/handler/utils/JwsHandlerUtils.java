@@ -250,7 +250,8 @@ public class JwsHandlerUtils {
                 log.info("Bypassing Nimbus: HSM is enabled and PSS algorithm (" +
                         signingAlgorithm.getName() + ") detected. Using custom JCA signing with SunPKCS11 provider.");
                 try {
-                    return signWithHSMPSS(jwsHeader, jwsObject, payloadString, (PrivateKey) privateKey, signingAlgorithm);
+                    return signWithHSMPSS(jwsHeader, jwsObject, payloadString,
+                            (PrivateKey) privateKey, signingAlgorithm);
                 } catch (Exception e) {
                     throw new JOSEException("HSM PSS signing failed: " + e.getMessage(), e);
                 }
