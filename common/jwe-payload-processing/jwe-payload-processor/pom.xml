@@ -76,6 +76,7 @@
                         <exclude>**/*Constants.class</exclude>
                         <exclude>**/*Exception.class</exclude>
                         <exclude>**/*ServerKeystoreRetriever.class</exclude>
+                        <exclude>**/*HsmJweDecryptionHelper.class</exclude>
                     </excludes>
                 </configuration>
                 <executions>
