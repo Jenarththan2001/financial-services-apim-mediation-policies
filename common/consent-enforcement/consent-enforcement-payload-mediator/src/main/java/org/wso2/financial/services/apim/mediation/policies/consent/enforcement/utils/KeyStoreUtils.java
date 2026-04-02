@@ -48,21 +48,25 @@ public class KeyStoreUtils {
      */
     public static Key getSigningKey() {
 
-        if (key == null) {
-            synchronized (ConsentEnforcementUtils.class) {
-                if (key == null) {
+        Key localKey = key;
+        if (localKey == null) {
+            synchronized (KeyStoreUtils.class) {
+                localKey = key;
+                if (localKey == null) {
                     log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
                     try {
                         KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
-                        key = keyStoreManager.getDefaultPrivateKey();
-                        log.info("Signing key loaded successfully. Key type: " + key.getClass().getName());
+                        localKey = keyStoreManager.getDefaultPrivateKey();
+                        key = localKey;
+                        log.info("Signing key loaded successfully. Key type: "
+                                + localKey.getClass().getName());
                     } catch (Exception e) {
                         log.error("Error occurred while retrieving private key from KeyStoreManager", e);
                     }
                 }
             }
         }
-        return key;
+        return localKey;
     }
 
 }
