@@ -123,7 +123,7 @@
                                     <fileset
                                             dir="../common/jwe-payload-processing">
                                         <filename
-                                                name="consentEnforcementPolicy.j2"/>
+                                                name="jwePayloadProcessingRequestPolicy.j2"/>
                                     </fileset>
                                 </copy>
                                 <!-- Copying j2 files to folder -->
