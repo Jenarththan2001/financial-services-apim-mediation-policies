@@ -23,6 +23,7 @@
             <class name="org.wso2.financial.services.apim.mediation.policies.jwe.processing.JwePayloadDecryptionMediatorTest"/>
             <class name="org.wso2.financial.services.apim.mediation.policies.jwe.processing.JweResponsePayloadEncryptionHandlerTest"/>
             <class name="org.wso2.financial.services.apim.mediation.policies.jwe.processing.JwkUtilsTest"/>
+            <class name="org.wso2.financial.services.apim.mediation.policies.jwe.processing.util.HsmJweDecryptionHelperTest"/>
         </classes>
     </test>
 </suite>
