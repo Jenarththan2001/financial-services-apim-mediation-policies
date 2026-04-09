@@ -49,14 +49,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.Key;
 import java.security.PrivateKey;
-import java.security.Provider;
-import java.security.Security;
-import java.security.Signature;
 import java.security.interfaces.ECPrivateKey;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PSSParameterSpec;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -71,16 +67,7 @@ public class JwsHandlerUtils {
 
     private static final Log log = LogFactory.getLog(JwsHandlerUtils.class);
 
-    private static boolean isHSMEnabled() {
 
-        String hsmEnabled = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
-                .getFirstProperty("Security.HSMKeyStore.Enabled");
-        boolean enabled = Boolean.parseBoolean(hsmEnabled);
-        if (log.isDebugEnabled()) {
-            log.debug("HSM Status Check: " + enabled + " (Raw value: " + hsmEnabled + ")");
-        }
-        return enabled;
-    }
 
     /**
      * Return JSON Error for SynapseHandler.
@@ -243,16 +230,18 @@ public class JwsHandlerUtils {
             JWSHeader jwsHeader = constructJWSHeader(signingKeyId, criticalParameters, signingAlgorithm);
             JWSObject jwsObject = constructJWSObject(jwsHeader, payloadString);
 
-            boolean hsmEnabled = isHSMEnabled();
-            boolean isPSS = isPSSAlgorithm(signingAlgorithm);
+            boolean hsmEnabled = HsmSigningHelper.isHSMEnabled();
+            boolean isPSS = HsmSigningHelper.isPSSAlgorithm(signingAlgorithm);
 
             if (hsmEnabled && isPSS) {
-                log.info("Bypassing Nimbus: HSM is enabled and PSS algorithm (" +
-                        signingAlgorithm.getName() + ") detected. Using custom JCA signing with SunPKCS11 provider.");
+                if (log.isDebugEnabled()) {
+                    log.debug("Bypassing Nimbus: HSM enabled, PSS algorithm (" +
+                            signingAlgorithm.getName() + "). Using HsmSigningHelper with SunPKCS11 provider.");
+                }
                 try {
                     return signWithHSMPSS(jwsHeader, jwsObject, payloadString,
                             (PrivateKey) privateKey, signingAlgorithm);
-                } catch (Exception e) {
+                } catch (GeneralSecurityException | UnsupportedEncodingException e) {
                     throw new JOSEException("HSM PSS signing failed: " + e.getMessage(), e);
                 }
             }
@@ -363,28 +352,11 @@ public class JwsHandlerUtils {
     }
 
     /**
-     * Checks if the JWS algorithm is a PSS-based algorithm.
-     * PSS algorithms (PS256, PS384, PS512) require special handling with HSM.
+     * Signs a JWS using HSM with PSS algorithm via {@link HsmSigningHelper}.
      *
-     * @param algorithm The JWS algorithm
-     * @return true if the algorithm is PSS-based, false otherwise
-     */
-    private static boolean isPSSAlgorithm(JWSAlgorithm algorithm) {
-
-        return JWSAlgorithm.PS256.equals(algorithm) ||
-                JWSAlgorithm.PS384.equals(algorithm) ||
-                JWSAlgorithm.PS512.equals(algorithm);
-    }
-
-    /**
-     * Signs a JWS using HSM with PSS algorithm, bypassing Nimbus library.
-     *
-     * Nimbus RSASSASigner uses BouncyCastle algorithm naming (e.g., "SHA256withRSAandMGF1")
-     * which is not compatible with SunPKCS11 provider. SunPKCS11 requires standard JCA
-     * naming (e.g., "SHA256withRSASSA-PSS").
-     *
-     * This method uses Java's Signature API directly with the HSM provider to perform
-     * PSS signing correctly.
+     * <p>Delegates the raw JCA signing to {@code HsmSigningHelper.signPSS()} and handles
+     * the JWS-specific concerns (b64 header check, signing-input construction, detached
+     * JWS assembly) here.</p>
      *
      * @param jwsHeader     The JWS header
      * @param jwsObject     The JWS object (used for b64 check)
@@ -392,37 +364,15 @@ public class JwsHandlerUtils {
      * @param privateKey    The HSM private key
      * @param algorithm     The JWS algorithm (PS256, PS384, PS512)
      * @return Detached JWS string (header..signature)
-     * @throws Exception if signing fails
+     * @throws GeneralSecurityException if signing fails
+     * @throws UnsupportedEncodingException if encoding fails
      */
     private static String signWithHSMPSS(JWSHeader jwsHeader, JWSObject jwsObject,
                                          String payloadString, PrivateKey privateKey,
-                                         JWSAlgorithm algorithm) throws Exception {
+                                         JWSAlgorithm algorithm)
+            throws GeneralSecurityException, UnsupportedEncodingException {
 
-        String jcaAlgorithm = getJCAPSSAlgorithmName(algorithm);
-        PSSParameterSpec pssParams = getPSSParameterSpec(algorithm);
-
-        // Get the HSM provider from the key
-        Provider hsmProvider = getHSMProvider(privateKey);
-
-        if (hsmProvider == null) {
-            throw new JOSEException("Could not find SunPKCS11 provider for HSM PSS signing. " +
-                    "Ensure HSM is properly configured and SunPKCS11 provider is registered.");
-        }
-
-        if (log.isDebugEnabled()) {
-            log.debug("Using JCA algorithm: " + jcaAlgorithm + " with HSM provider: " + hsmProvider.getName());
-        }
-
-        // Create signature instance with HSM provider
-        Signature signature = Signature.getInstance(jcaAlgorithm, hsmProvider);
-
-        // Set PSS parameters
-        signature.setParameter(pssParams);
-
-        // Initialize with private key
-        signature.initSign(privateKey);
-
-        // Get signing input based on b64 header
+        // Build signing input based on b64 header
         byte[] signingInput;
         if (isB64HeaderVerifiable(jwsObject)) {
             // b64=true: header.base64(payload)
@@ -434,69 +384,12 @@ public class JwsHandlerUtils {
             signingInput = getSigningInput(jwsHeader, payloadString);
         }
 
-        // Sign
-        signature.update(signingInput);
-        byte[] signatureBytes = signature.sign();
+        // Delegate raw JCA signing to HsmSigningHelper
+        byte[] signatureBytes = HsmSigningHelper.signPSS(signingInput, privateKey, algorithm);
 
-        // Create detached JWS (header..signature)
+        // Assemble detached JWS (header..signature)
         Base64URL signatureBase64 = Base64URL.encode(signatureBytes);
         return createDetachedJws(jwsHeader, signatureBase64);
-    }
-
-    /**
-     * Get the SunPKCS11 provider associated with the HSM private key.
-     *
-     * @param privateKey the private key (expected to be a P11Key from HSM)
-     * @return the SunPKCS11 provider, or null if not found
-     */
-    private static Provider getHSMProvider(PrivateKey privateKey) {
-
-        // First, try to get the provider from the key's class if it's a P11Key
-        String keyClassName = privateKey.getClass().getName();
-        if (keyClassName.contains("P11Key") || keyClassName.contains("pkcs11")) {
-            // The key is from PKCS#11, find the corresponding provider
-            for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
-                    // Check if this provider supports the required algorithm
-                    if (provider.getService("Signature", "SHA256withRSASSA-PSS") != null) {
-                        return provider;
-                    }
-                }
-            }
-            // If no provider with RSASSA-PSS support found, return first SunPKCS11
-            for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
-                    return provider;
-                }
-            }
-        }
-        return null;
-    }
-
-    private static String getJCAPSSAlgorithmName(JWSAlgorithm signatureAlgorithm) throws JOSEException {
-
-        if (JWSAlgorithm.PS256.equals(signatureAlgorithm)) {
-            return "SHA256withRSASSA-PSS";
-        } else if (JWSAlgorithm.PS384.equals(signatureAlgorithm)) {
-            return "SHA384withRSASSA-PSS";
-        } else if (JWSAlgorithm.PS512.equals(signatureAlgorithm)) {
-            return "SHA512withRSASSA-PSS";
-        } else {
-            throw new JOSEException("Unsupported PSS algorithm: " + signatureAlgorithm);
-        }
-    }
-
-    private static PSSParameterSpec getPSSParameterSpec(JWSAlgorithm signatureAlgorithm) throws JOSEException {
-
-        if (JWSAlgorithm.PS256.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
-        } else if (JWSAlgorithm.PS384.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1);
-        } else if (JWSAlgorithm.PS512.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1);
-        } else {
-            throw new JOSEException("Unsupported PSS algorithm for parameter spec: " + signatureAlgorithm);
-        }
     }
 
 }
