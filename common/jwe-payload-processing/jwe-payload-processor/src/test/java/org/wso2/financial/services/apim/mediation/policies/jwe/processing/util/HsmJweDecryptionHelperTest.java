@@ -126,10 +126,10 @@ public class HsmJweDecryptionHelperTest {
     }
 
     @Test(expectedExceptions = GeneralSecurityException.class,
-            expectedExceptionsMessageRegExp = ".*Could not find SunPKCS11 provider.*")
-    public void testDecryptWithHSM_NonP11Key_ThrowsOnProviderLookup() throws Exception {
+            expectedExceptionsMessageRegExp = ".*Could not find IAIK PKCS#11 provider.*")
+    public void testDecryptWithHSM_NonIAIKKey_ThrowsOnProviderLookup() throws Exception {
 
-        // Use the public method (2-arg) with a non-P11 key — should throw because no SunPKCS11 provider
+        // Use the public method (2-arg) with a non-IAIK key — should throw because no IAIK provider
         String jweToken = JweProcessingTestUtil.encryptPayload("RSA-OAEP-256", "A256GCM",
                 JweProcessingTestConstants.PAYLOAD);
         EncryptedJWT parsedJwt = EncryptedJWT.parse(jweToken);
@@ -319,7 +319,7 @@ public class HsmJweDecryptionHelperTest {
     @Test
     public void testOaepUnpad_WithLeadingZerosStripped() throws Exception {
 
-        // This tests the SunPKCS11 behavior where raw RSA output may have leading zeros stripped.
+        // This tests the IAIK PKCS#11 behavior where raw RSA output may have leading zeros stripped.
         // Our oaepUnpad re-pads with leading zeros to handle this.
         byte[] originalData = new byte[32];
         new SecureRandom().nextBytes(originalData);
@@ -334,14 +334,14 @@ public class HsmJweDecryptionHelperTest {
         rawCipher.init(Cipher.DECRYPT_MODE, privateKey);
         byte[] rawDecrypted = rawCipher.doFinal(encrypted);
 
-        // OAEP encoded message always starts with 0x00 — strip it to simulate SunPKCS11 behavior
+        // OAEP encoded message always starts with 0x00 — strip it to simulate IAIK provider behavior
         if (rawDecrypted.length > 0 && rawDecrypted[0] == 0) {
             byte[] stripped = new byte[rawDecrypted.length - 1];
             System.arraycopy(rawDecrypted, 1, stripped, 0, stripped.length);
 
             byte[] recovered = HsmJweDecryptionHelper.oaepUnpad(stripped, "SHA-256", keyBitLength);
             Assert.assertEquals(recovered, originalData,
-                    "OAEP unpad should handle stripped leading zeros (SunPKCS11 behavior)");
+                    "OAEP unpad should handle stripped leading zeros (IAIK provider behavior)");
         }
     }
 
@@ -361,10 +361,10 @@ public class HsmJweDecryptionHelperTest {
     // ==================== getHSMProvider Tests ====================
 
     @Test
-    public void testGetHSMProvider_NonP11Key_ReturnsNull() {
+    public void testGetHSMProvider_NonIAIKKey_ReturnsNull() {
 
         // A standard JKS RSAPrivateCrtKeyImpl should not find an HSM provider
         Provider result = HsmJweDecryptionHelper.getHSMProvider(privateKey);
-        Assert.assertNull(result, "Non-P11 key should return null (no SunPKCS11 provider)");
+        Assert.assertNull(result, "Non-IAIK key should return null (no IAIK PKCS#11 provider)");
     }
 }

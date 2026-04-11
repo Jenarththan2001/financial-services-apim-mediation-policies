@@ -41,10 +41,11 @@ import javax.crypto.spec.SecretKeySpec;
 /**
  * HSM-aware JWE decryption helper.
  * <p>
- * SunPKCS11 does not support RSA-OAEP Cipher padding, so Nimbus RSADecrypter fails with
- * HSM-backed P11PrivateKey. This helper bypasses Nimbus and performs JWE decryption manually:
+ * The IAIK PKCS#11 provider does not support RSA-OAEP Cipher padding, so Nimbus RSADecrypter
+ * fails with HSM-backed IAIKPKCS11 private keys. This helper bypasses Nimbus and performs JWE
+ * decryption manually:
  * <ol>
- *   <li>Raw RSA decrypt inside HSM (RSA/ECB/NoPadding via SunPKCS11) - private key never leaves HSM</li>
+ *   <li>Raw RSA decrypt inside HSM (RawRSA via IAIK PKCS#11) - private key never leaves HSM</li>
  *   <li>OAEP unpadding in software (RFC 3447 Section 7.1.2) - no secret material needed</li>
  *   <li>AES-GCM content decryption with recovered CEK</li>
  * </ol>
@@ -60,10 +61,10 @@ public class HsmJweDecryptionHelper {
 
     /**
      * Decrypt a JWE token using an HSM-backed private key.
-     * Finds the SunPKCS11 provider automatically based on the key type.
+     * Finds the IAIK PKCS#11 provider automatically based on the key type.
      *
      * @param parsedJwt  The parsed EncryptedJWT to decrypt
-     * @param privateKey The HSM-backed private key (P11PrivateKey)
+     * @param privateKey The HSM-backed private key (IAIKPKCS11 key)
      * @return The decrypted JWT claims
      * @throws GeneralSecurityException if any cryptographic operation fails
      * @throws ParseException           if the decrypted payload cannot be parsed as JWT claims
@@ -71,11 +72,11 @@ public class HsmJweDecryptionHelper {
     public static JWTClaimsSet decryptWithHSM(EncryptedJWT parsedJwt, PrivateKey privateKey)
             throws GeneralSecurityException, ParseException {
 
-        // Find the SunPKCS11 provider
+        // Find the IAIK PKCS#11 provider
         Provider hsmProvider = getHSMProvider(privateKey);
         if (hsmProvider == null) {
             throw new GeneralSecurityException(
-                    "Could not find SunPKCS11 provider for HSM JWE decryption. Key type: "
+                    "Could not find IAIK PKCS#11 provider for HSM JWE decryption. Key type: "
                             + privateKey.getClass().getName());
         }
 
@@ -128,14 +129,14 @@ public class HsmJweDecryptionHelper {
             // RSA-OAEP variants: raw RSA + manual OAEP unpadding in software
             String oaepHashAlgo = getOAEPHashAlgorithm(algorithm);
 
-            // Step 1: Raw RSA decrypt (in production, the private key stays inside the HSM)
-            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/NoPadding", rsaProvider);
+            // Step 1: Raw RSA decrypt (private key stays inside the HSM)
+            Cipher rsaCipher = Cipher.getInstance("RawRSA", rsaProvider);
             rsaCipher.init(Cipher.DECRYPT_MODE, privateKey);
             byte[] rawDecrypted = rsaCipher.doFinal(encryptedCEK);
 
             // Step 2: Manual OAEP unpadding in software (RFC 3447 Section 7.1.2)
             // Use encryptedCEK.length for key size — RSA ciphertext is always exactly the modulus size.
-            // rawDecrypted.length may be shorter if SunPKCS11 strips leading zero bytes.
+            // rawDecrypted.length may be shorter if the provider strips leading zero bytes.
             int keyBitLength = encryptedCEK.length * 8;
             cekBytes = oaepUnpad(rawDecrypted, oaepHashAlgo, keyBitLength);
         }
@@ -204,28 +205,25 @@ public class HsmJweDecryptionHelper {
     }
 
     /**
-     * Get the SunPKCS11 provider associated with the HSM private key.
+     * Get the IAIK PKCS#11 provider associated with the HSM private key.
      *
-     * @param privateKey the private key (expected to be a P11Key from HSM)
-     * @return the SunPKCS11 provider, or null if not found
+     * @param privateKey the private key (expected to be an IAIKPKCS11 key from HSM)
+     * @return the IAIK PKCS#11 provider, or null if not found
      */
     static Provider getHSMProvider(PrivateKey privateKey) {
 
-        // First, try to get the provider from the key's class if it's a P11Key
         String keyClassName = privateKey.getClass().getName();
-        if (keyClassName.contains("P11Key") || keyClassName.contains("pkcs11")) {
-            // The key is from PKCS#11, find the corresponding provider
+        if (keyClassName.contains("IAIKPKCS11") || keyClassName.contains("pkcs11")) {
             for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
-                    // Check if this provider supports the required algorithm
-                    if (provider.getService("Cipher", "RSA/ECB/NoPadding") != null) {
+                if (provider.getName().startsWith("IAIK PKCS#11")) {
+                    if (provider.getService("Cipher", "RawRSA") != null) {
                         return provider;
                     }
                 }
             }
-            // If no provider with RSA Cipher support found, return first SunPKCS11
+            // Fallback: return first IAIK PKCS#11 provider
             for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
+                if (provider.getName().startsWith("IAIK PKCS#11")) {
                     return provider;
                 }
             }

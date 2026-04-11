@@ -49,7 +49,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
 import java.security.Key;
 import java.security.PrivateKey;
 import java.security.interfaces.ECPrivateKey;
@@ -66,8 +65,6 @@ import javax.xml.stream.XMLStreamException;
 public class JwsHandlerUtils {
 
     private static final Log log = LogFactory.getLog(JwsHandlerUtils.class);
-
-
 
     /**
      * Return JSON Error for SynapseHandler.
@@ -230,21 +227,6 @@ public class JwsHandlerUtils {
             JWSHeader jwsHeader = constructJWSHeader(signingKeyId, criticalParameters, signingAlgorithm);
             JWSObject jwsObject = constructJWSObject(jwsHeader, payloadString);
 
-            boolean hsmEnabled = HsmSigningHelper.isHSMEnabled();
-            boolean isPSS = HsmSigningHelper.isPSSAlgorithm(signingAlgorithm);
-
-            if (hsmEnabled && isPSS) {
-                if (log.isDebugEnabled()) {
-                    log.debug("Bypassing Nimbus: HSM enabled, PSS algorithm (" +
-                            signingAlgorithm.getName() + "). Using HsmSigningHelper with SunPKCS11 provider.");
-                }
-                try {
-                    return signWithHSMPSS(jwsHeader, jwsObject, payloadString,
-                            (PrivateKey) privateKey, signingAlgorithm);
-                } catch (GeneralSecurityException | UnsupportedEncodingException e) {
-                    throw new JOSEException("HSM PSS signing failed: " + e.getMessage(), e);
-                }
-            }
             if ("RSA".equals(privateKey.getAlgorithm())) {
                 // If the signing key is an RSA Key
                 signer = new RSASSASigner((PrivateKey) privateKey);
@@ -349,47 +331,6 @@ public class JwsHandlerUtils {
     public static String createDetachedJws(JWSHeader jwsHeader, Base64URL signature) {
 
         return jwsHeader.toBase64URL().toString() + ".." + signature.toString();
-    }
-
-    /**
-     * Signs a JWS using HSM with PSS algorithm via {@link HsmSigningHelper}.
-     *
-     * <p>Delegates the raw JCA signing to {@code HsmSigningHelper.signPSS()} and handles
-     * the JWS-specific concerns (b64 header check, signing-input construction, detached
-     * JWS assembly) here.</p>
-     *
-     * @param jwsHeader     The JWS header
-     * @param jwsObject     The JWS object (used for b64 check)
-     * @param payloadString The payload to sign
-     * @param privateKey    The HSM private key
-     * @param algorithm     The JWS algorithm (PS256, PS384, PS512)
-     * @return Detached JWS string (header..signature)
-     * @throws GeneralSecurityException if signing fails
-     * @throws UnsupportedEncodingException if encoding fails
-     */
-    private static String signWithHSMPSS(JWSHeader jwsHeader, JWSObject jwsObject,
-                                         String payloadString, PrivateKey privateKey,
-                                         JWSAlgorithm algorithm)
-            throws GeneralSecurityException, UnsupportedEncodingException {
-
-        // Build signing input based on b64 header
-        byte[] signingInput;
-        if (isB64HeaderVerifiable(jwsObject)) {
-            // b64=true: header.base64(payload)
-            String combinedInput = jwsHeader.toBase64URL().toString() + "." +
-                    Base64URL.encode(payloadString).toString();
-            signingInput = combinedInput.getBytes(StandardCharsets.UTF_8);
-        } else {
-            // b64=false: header.payload (unencoded)
-            signingInput = getSigningInput(jwsHeader, payloadString);
-        }
-
-        // Delegate raw JCA signing to HsmSigningHelper
-        byte[] signatureBytes = HsmSigningHelper.signPSS(signingInput, privateKey, algorithm);
-
-        // Assemble detached JWS (header..signature)
-        Base64URL signatureBase64 = Base64URL.encode(signatureBytes);
-        return createDetachedJws(jwsHeader, signatureBase64);
     }
 
 }

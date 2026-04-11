@@ -108,7 +108,7 @@ public class JwePayloadDecryptionMediator extends AbstractMediator {
             JWTClaimsSet decryptedClaimsSet;
 
             if (keystoreRetriever.isHSMEnabled()) {
-                // HSM path: SunPKCS11 does not support RSA-OAEP Cipher padding, so we bypass
+                // HSM path: IAIK PKCS#11 does not support RSA-OAEP Cipher padding, so we bypass
                 // Nimbus RSADecrypter and perform raw RSA in HSM + manual OAEP unpadding + AES-GCM
                 log.info("HSM enabled: Using custom JWE decryption (raw RSA in HSM + OAEP unpad).");
                 decryptedClaimsSet = HsmJweDecryptionHelper.decryptWithHSM(parsedJwt, (PrivateKey) privateKey);

@@ -103,7 +103,7 @@ public class ServerKeystoreRetriever {
     private static boolean checkHSMEnabled() {
 
         String hsmEnabledStr = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
-                .getFirstProperty("Security.HSMKeyStore.Enabled");
+                .getFirstProperty("Security.HSM.Enabled");
         boolean enabled = Boolean.parseBoolean(hsmEnabledStr);
         if (log.isDebugEnabled()) {
             log.debug("HSM Status Check: " + enabled + " (Raw value: " + hsmEnabledStr + ")");
