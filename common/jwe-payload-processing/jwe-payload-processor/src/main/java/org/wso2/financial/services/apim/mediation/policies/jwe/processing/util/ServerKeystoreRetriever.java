@@ -19,8 +19,11 @@
 package org.wso2.financial.services.apim.mediation.policies.jwe.processing.util;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.SynapseException;
 import org.wso2.carbon.base.ServerConfiguration;
+import org.wso2.carbon.core.util.KeyStoreManager;
 import org.wso2.financial.services.apim.mediation.policies.jwe.processing.constants.JwePayloadProcessingConstants;
 
 import java.io.FileInputStream;
@@ -34,34 +37,53 @@ import java.security.cert.CertificateException;
 
 /**
  * Utility to retrieve Server certificates.
+ * Supports both file-based keystore and HSM (PKCS#11) via Carbon KeyStoreManager.
  */
 public class ServerKeystoreRetriever {
+
+    private static final Log log = LogFactory.getLog(ServerKeystoreRetriever.class);
 
     private KeyStore keyStore = null;
     private static final Object lock = new Object();
     static ServerKeystoreRetriever retriever;
 
-    // Internal KeyStore Password.
-    private final char[] keyStorePassword;
+    // Super tenant ID used for KeyStoreManager
+    private static final int SUPER_TENANT_ID = -1234;
 
+    // Internal KeyStore Password (only used for file-based keystore).
+    private char[] keyStorePassword;
+
+    // Cached HSM private key (loaded once via KeyStoreManager)
+    private static volatile Key hsmPrivateKey;
+
+    // Flag indicating whether HSM is enabled
+    private final boolean hsmEnabled;
 
     /**
      * Private Constructor of config parser.
      */
     private ServerKeystoreRetriever() {
 
-        String keyStoreLocation = ServerConfiguration.getInstance()
-                .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_LOCATION_CONF_KEY);
-        String keyStorePasswordConfig = ServerConfiguration.getInstance()
-                .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_PASS_CONF_KEY);
-        keyStore = loadKeyStore(keyStoreLocation, keyStorePasswordConfig);
-        keyStorePassword = keyStorePasswordConfig.toCharArray();
+        hsmEnabled = checkHSMEnabled();
+
+        if (!hsmEnabled) {
+            // File-based keystore path (original behavior)
+            String keyStoreLocation = ServerConfiguration.getInstance()
+                    .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_LOCATION_CONF_KEY);
+            String keyStorePasswordConfig = ServerConfiguration.getInstance()
+                    .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_PASS_CONF_KEY);
+            keyStore = loadKeyStore(keyStoreLocation, keyStorePasswordConfig);
+            keyStorePassword = keyStorePasswordConfig.toCharArray();
+            log.info("JWE ServerKeystoreRetriever initialized with file-based keystore.");
+        } else {
+            log.info("JWE ServerKeystoreRetriever initialized with HSM mode (KeyStoreManager).");
+        }
     }
 
     /**
      * Singleton getInstance method to create only one object.
      *
-     * @return FinancialServicesConfigParser object
+     * @return ServerKeystoreRetriever object
      */
     public static ServerKeystoreRetriever getInstance() {
 
@@ -71,6 +93,32 @@ public class ServerKeystoreRetriever {
             }
         }
         return retriever;
+    }
+
+    /**
+     * Check if HSM is enabled via server configuration.
+     *
+     * @return true if HSM is enabled
+     */
+    private static boolean checkHSMEnabled() {
+
+        String hsmEnabledStr = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
+                .getFirstProperty("Security.HSMKeyStore.Enabled");
+        boolean enabled = Boolean.parseBoolean(hsmEnabledStr);
+        if (log.isDebugEnabled()) {
+            log.debug("HSM Status Check: " + enabled + " (Raw value: " + hsmEnabledStr + ")");
+        }
+        return enabled;
+    }
+
+    /**
+     * Returns whether HSM is enabled.
+     *
+     * @return true if HSM is enabled
+     */
+    public boolean isHSMEnabled() {
+
+        return hsmEnabled;
     }
 
     /**
@@ -96,13 +144,20 @@ public class ServerKeystoreRetriever {
     }
 
     /**
-     * Returns the signing key based on the alias provided.
+     * Returns the private key for JWE decryption.
+     * When HSM is enabled, uses Carbon KeyStoreManager (HSM-aware).
+     * When HSM is not enabled, uses the file-based keystore (original behavior).
      *
-     * @param alias Alias of the signing key to retrieve
-     * @return Optional<Key> The signing key as an Optional
+     * @param alias Alias of the key to retrieve (used only in file-based mode)
+     * @return Key The private key
      */
     public Key getSigningKey(String alias) {
 
+        if (hsmEnabled) {
+            return getHSMPrivateKey();
+        }
+
+        // Original file-based keystore path
         if (StringUtils.isNotBlank(alias)) {
             try {
                 return keyStore.getKey(alias, keyStorePassword);
@@ -112,5 +167,34 @@ public class ServerKeystoreRetriever {
         }
 
         return null;
+    }
+
+    /**
+     * Returns the private key from KeyStoreManager (HSM-aware).
+     * Uses volatile double-checked locking for thread-safe lazy initialization.
+     *
+     * @return Key The HSM-backed private key
+     */
+    private Key getHSMPrivateKey() {
+
+        Key localKey = hsmPrivateKey;
+        if (localKey == null) {
+            synchronized (ServerKeystoreRetriever.class) {
+                localKey = hsmPrivateKey;
+                if (localKey == null) {
+                    try {
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        localKey = keyStoreManager.getDefaultPrivateKey();
+                        hsmPrivateKey = localKey;
+                        log.info("JWE decryption key loaded from KeyStoreManager. Key type: "
+                                + localKey.getClass().getName());
+                    } catch (Exception e) {
+                        throw new SynapseException(
+                                "Unable to retrieve private key from KeyStoreManager for JWE decryption", e);
+                    }
+                }
+            }
+        }
+        return localKey;
     }
 }
