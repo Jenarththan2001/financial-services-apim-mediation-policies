@@ -30,9 +30,11 @@ import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.mediators.AbstractMediator;
 import org.json.JSONObject;
 import org.wso2.financial.services.apim.mediation.policies.jwe.processing.exceptions.JwePayloadProcessingException;
+import org.wso2.financial.services.apim.mediation.policies.jwe.processing.util.HsmJweDecryptionHelper;
 import org.wso2.financial.services.apim.mediation.policies.jwe.processing.util.JwePayloadProcessingUtils;
 import org.wso2.financial.services.apim.mediation.policies.jwe.processing.util.ServerKeystoreRetriever;
 
+import java.security.GeneralSecurityException;
 import java.security.Key;
 import java.security.PrivateKey;
 import java.text.ParseException;
@@ -94,7 +96,8 @@ public class JwePayloadDecryptionMediator extends AbstractMediator {
             }
 
             // Get the private key of the server certificates from the keystore to decrypt the payload
-            Key privateKey = ServerKeystoreRetriever.getInstance().getSigningKey(getJweEncryptionCertAlias());
+            ServerKeystoreRetriever keystoreRetriever = ServerKeystoreRetriever.getInstance();
+            Key privateKey = keystoreRetriever.getSigningKey(getJweEncryptionCertAlias());
             if (privateKey == null) {
                 log.error("Private key not found in the keystore. Hence, cannot proceed with payload decryption.");
                 throw new SynapseException("Error occurred while payload decryption.");
@@ -102,11 +105,19 @@ public class JwePayloadDecryptionMediator extends AbstractMediator {
 
             // Decrypt the token
             EncryptedJWT parsedJwt = EncryptedJWT.parse(encryptedPayload.get());
-            RSADecrypter decrypter = new RSADecrypter((PrivateKey) privateKey);
-            parsedJwt.decrypt(decrypter);
+            JWTClaimsSet decryptedClaimsSet;
 
-            // Retrieving the claims from the decrypted JWT token. This will contain the actual payload.
-            JWTClaimsSet decryptedClaimsSet = parsedJwt.getJWTClaimsSet();
+            if (keystoreRetriever.isHSMEnabled()) {
+                // HSM path: SunPKCS11 does not support RSA-OAEP Cipher padding, so we bypass
+                // Nimbus RSADecrypter and perform raw RSA in HSM + manual OAEP unpadding + AES-GCM
+                log.info("HSM enabled: Using custom JWE decryption (raw RSA in HSM + OAEP unpad).");
+                decryptedClaimsSet = HsmJweDecryptionHelper.decryptWithHSM(parsedJwt, (PrivateKey) privateKey);
+            } else {
+                // Standard path: Use Nimbus RSADecrypter (original behavior)
+                RSADecrypter decrypter = new RSADecrypter((PrivateKey) privateKey);
+                parsedJwt.decrypt(decrypter);
+                decryptedClaimsSet = parsedJwt.getJWTClaimsSet();
+            }
             if (log.isDebugEnabled()) {
                 log.debug("Decrypted JWT Claims: " + decryptedClaimsSet.toString());
             }
@@ -121,6 +132,9 @@ public class JwePayloadDecryptionMediator extends AbstractMediator {
         } catch (ParseException | JOSEException e) {
             log.error("Error while parsing/decrypting the JWE token", e);
             throw new SynapseException("Error while parsing/decrypting the JWE token", e);
+        } catch (GeneralSecurityException e) {
+            log.error("Error during HSM JWE decryption", e);
+            throw new SynapseException("Error during HSM JWE decryption", e);
         }
         return true;
     }
