@@ -28,8 +28,6 @@ import java.security.PrivateKey;
 import java.security.Provider;
 import java.security.Security;
 import java.security.Signature;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PSSParameterSpec;
 
 /**
  * Utility class for HSM-aware PSS signing using SunPKCS11 provider.
@@ -96,7 +94,6 @@ public class HsmSigningHelper {
         }
 
         String jcaAlgorithm = getJCAPSSAlgorithmName(algorithm);
-        PSSParameterSpec pssSpec = getPSSParameterSpec(algorithm);
 
         if (log.isDebugEnabled()) {
             log.debug("HSM PSS signing: algorithm=" + jcaAlgorithm + ", provider=" + hsmProvider.getName()
@@ -104,7 +101,6 @@ public class HsmSigningHelper {
         }
 
         Signature signature = Signature.getInstance(jcaAlgorithm, hsmProvider);
-        signature.setParameter(pssSpec);
         signature.initSign(privateKey);
         signature.update(signingInput);
 
@@ -168,22 +164,4 @@ public class HsmSigningHelper {
         throw new IllegalArgumentException("Not a PSS algorithm: " + algorithm);
     }
 
-    /**
-     * Create PSSParameterSpec for the given JWS algorithm per RFC 7518.
-     *
-     * @param algorithm JWS algorithm (PS256, PS384, or PS512).
-     * @return PSS parameter specification.
-     * @throws IllegalArgumentException If the algorithm is not a PSS variant.
-     */
-    public static PSSParameterSpec getPSSParameterSpec(JWSAlgorithm algorithm) {
-
-        if (JWSAlgorithm.PS256.equals(algorithm)) {
-            return new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
-        } else if (JWSAlgorithm.PS384.equals(algorithm)) {
-            return new PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1);
-        } else if (JWSAlgorithm.PS512.equals(algorithm)) {
-            return new PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1);
-        }
-        throw new IllegalArgumentException("Not a PSS algorithm: " + algorithm);
-    }
 }
