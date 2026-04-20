@@ -51,6 +51,8 @@ import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.PrivateKey;
+import java.security.Provider;
+import java.security.Security;
 import java.security.interfaces.ECPrivateKey;
 import java.util.HashMap;
 import java.util.Map;
@@ -65,6 +67,8 @@ import javax.xml.stream.XMLStreamException;
 public class JwsHandlerUtils {
 
     private static final Log log = LogFactory.getLog(JwsHandlerUtils.class);
+    private static final String HSM_KEYSTORE_ENABLED = "Security.HSMKeyStore.Enabled";
+    private static final String SUN_PKCS11_PREFIX = "SunPKCS11";
 
     /**
      * Return JSON Error for SynapseHandler.
@@ -238,6 +242,15 @@ public class JwsHandlerUtils {
                         "\" algorithm is not supported by the Solution");
             }
 
+            // Pin JWSSigner to the SunPKCS11 provider so that Nimbus uses the HSM for signing.
+            if (isHSMEnabled()) {
+                Provider hsmProvider = getHSMProvider();
+                signer.getJCAContext().setProvider(hsmProvider);
+                if (log.isDebugEnabled()) {
+                    log.debug("HSM enabled - pinned JWSSigner to provider: " + hsmProvider.getName());
+                }
+            }
+
             try {
                 // Check if payload is b64 encoded or un-encoded
                 if (isB64HeaderVerifiable(jwsObject)) {
@@ -331,6 +344,38 @@ public class JwsHandlerUtils {
     public static String createDetachedJws(JWSHeader jwsHeader, Base64URL signature) {
 
         return jwsHeader.toBase64URL().toString() + ".." + signature.toString();
+    }
+
+    /**
+     * Check whether HSM-based keystore is enabled via {@code Security.HSMKeyStore.Enabled}
+     * in carbon.xml (sourced from deployment.toml).
+     *
+     * @return {@code true} if HSM keystore is enabled.
+     */
+    static boolean isHSMEnabled() {
+
+        String hsmEnabledStr = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
+                .getFirstProperty(HSM_KEYSTORE_ENABLED);
+        return Boolean.parseBoolean(hsmEnabledStr);
+    }
+
+    /**
+     * Auto-detect the configured SunPKCS11 provider from the JVM.
+     * The provider is registered by Carbon Kernel's {@code KeyStoreManager.getHSMKeyStore()}
+     * during server startup.
+     *
+     * @return the first SunPKCS11-* provider.
+     * @throws IllegalStateException if no SunPKCS11 provider is registered.
+     */
+    static Provider getHSMProvider() {
+
+        for (Provider p : Security.getProviders()) {
+            if (p.getName().startsWith(SUN_PKCS11_PREFIX)) {
+                return p;
+            }
+        }
+        throw new IllegalStateException("HSM keystore is enabled but no SunPKCS11 provider was found "
+                + "in the JVM. Ensure the PKCS#11 provider is configured and registered during server startup.");
     }
 
 }
