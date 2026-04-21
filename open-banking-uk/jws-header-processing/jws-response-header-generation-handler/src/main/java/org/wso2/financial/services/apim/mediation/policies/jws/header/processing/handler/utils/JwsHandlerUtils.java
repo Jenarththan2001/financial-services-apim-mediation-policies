@@ -68,7 +68,7 @@ public class JwsHandlerUtils {
 
     private static final Log log = LogFactory.getLog(JwsHandlerUtils.class);
     private static final String HSM_KEYSTORE_ENABLED = "Security.HSMKeyStore.Enabled";
-    private static final String SUN_PKCS11_PREFIX = "SunPKCS11";
+    private static final String SUN_PKCS11_PREFIX = "SunPKCS11-";
 
     /**
      * Return JSON Error for SynapseHandler.
