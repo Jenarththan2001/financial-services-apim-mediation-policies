@@ -60,6 +60,7 @@ public class HsmJweDecryptionHelper {
 
     /**
      * Decrypt a JWE token using an HSM-backed private key.
+     * Finds the SunPKCS11 provider automatically based on the key type.
      *
      * @param parsedJwt  The parsed EncryptedJWT to decrypt
      * @param privateKey The HSM-backed private key (P11PrivateKey)
@@ -68,6 +69,32 @@ public class HsmJweDecryptionHelper {
      * @throws ParseException           if the decrypted payload cannot be parsed as JWT claims
      */
     public static JWTClaimsSet decryptWithHSM(EncryptedJWT parsedJwt, PrivateKey privateKey)
+            throws GeneralSecurityException, ParseException {
+
+        // Find the SunPKCS11 provider
+        Provider hsmProvider = getHSMProvider(privateKey);
+        if (hsmProvider == null) {
+            throw new GeneralSecurityException(
+                    "Could not find SunPKCS11 provider for HSM JWE decryption. Key type: "
+                            + privateKey.getClass().getName());
+        }
+
+        return decryptWithHSM(parsedJwt, privateKey, hsmProvider);
+    }
+
+    /**
+     * Decrypt a JWE token using the given private key and RSA provider.
+     * Package-private for testability — allows unit tests to provide a standard Java RSA provider
+     * instead of requiring a real PKCS#11 HSM.
+     *
+     * @param parsedJwt   The parsed EncryptedJWT to decrypt
+     * @param privateKey  The private key for RSA decryption
+     * @param rsaProvider The security provider for RSA Cipher operations
+     * @return The decrypted JWT claims
+     * @throws GeneralSecurityException if any cryptographic operation fails
+     * @throws ParseException           if the decrypted payload cannot be parsed as JWT claims
+     */
+    static JWTClaimsSet decryptWithHSM(EncryptedJWT parsedJwt, PrivateKey privateKey, Provider rsaProvider)
             throws GeneralSecurityException, ParseException {
 
         JWEHeader header = parsedJwt.getHeader();
@@ -84,34 +111,25 @@ public class HsmJweDecryptionHelper {
         byte[] authTag = parsedJwt.getAuthTag().decode();
         byte[] aad = header.toBase64URL().toString().getBytes(StandardCharsets.US_ASCII);
 
-        // Find the SunPKCS11 provider
-        Provider hsmProvider = getHSMProvider(privateKey);
-        if (hsmProvider == null) {
-            throw new GeneralSecurityException(
-                    "Could not find SunPKCS11 provider for HSM JWE decryption. Key type: "
-                            + privateKey.getClass().getName());
-        }
-
         if (log.isDebugEnabled()) {
             log.debug("HSM JWE decrypt: algo=" + algorithm + ", enc=" + encMethod
-                    + ", provider=" + hsmProvider.getName());
+                    + ", provider=" + rsaProvider.getName());
         }
 
         // Unwrap the CEK using the appropriate RSA padding scheme
         byte[] cekBytes;
 
         if (JWEAlgorithm.RSA1_5.equals(algorithm)) {
-            // RSA1_5 uses PKCS#1 v1.5 padding — SunPKCS11 supports this directly
-            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", hsmProvider);
+            // RSA1_5 uses PKCS#1 v1.5 padding — supported directly
+            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", rsaProvider);
             rsaCipher.init(Cipher.DECRYPT_MODE, privateKey);
             cekBytes = rsaCipher.doFinal(encryptedCEK);
         } else {
-            // RSA-OAEP variants: SunPKCS11 does NOT support OAEP Cipher padding,
-            // so we do raw RSA in HSM + manual OAEP unpadding in software
+            // RSA-OAEP variants: raw RSA + manual OAEP unpadding in software
             String oaepHashAlgo = getOAEPHashAlgorithm(algorithm);
 
-            // Step 1: Raw RSA decrypt inside HSM (private key never leaves HSM)
-            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/NoPadding", hsmProvider);
+            // Step 1: Raw RSA decrypt (in production, the private key stays inside the HSM)
+            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/NoPadding", rsaProvider);
             rsaCipher.init(Cipher.DECRYPT_MODE, privateKey);
             byte[] rawDecrypted = rsaCipher.doFinal(encryptedCEK);
 
@@ -145,7 +163,7 @@ public class HsmJweDecryptionHelper {
     /**
      * Validate that the JWE algorithm and encryption method are supported.
      */
-    private static void validateAlgorithm(JWEAlgorithm algorithm, EncryptionMethod encMethod)
+    static void validateAlgorithm(JWEAlgorithm algorithm, EncryptionMethod encMethod)
             throws GeneralSecurityException {
 
         // Supported key encryption algorithms
@@ -172,7 +190,7 @@ public class HsmJweDecryptionHelper {
     /**
      * Get the hash algorithm name for OAEP unpadding based on the JWE algorithm.
      */
-    private static String getOAEPHashAlgorithm(JWEAlgorithm algorithm) {
+    static String getOAEPHashAlgorithm(JWEAlgorithm algorithm) {
 
         if (JWEAlgorithm.RSA_OAEP_256.equals(algorithm)) {
             return "SHA-256";
@@ -191,7 +209,7 @@ public class HsmJweDecryptionHelper {
      * @param privateKey the private key (expected to be a P11Key from HSM)
      * @return the SunPKCS11 provider, or null if not found
      */
-    private static Provider getHSMProvider(PrivateKey privateKey) {
+    static Provider getHSMProvider(PrivateKey privateKey) {
 
         // First, try to get the provider from the key's class if it's a P11Key
         String keyClassName = privateKey.getClass().getName();
@@ -225,7 +243,7 @@ public class HsmJweDecryptionHelper {
      * @param keyBitLen  The RSA key bit length
      * @return The unpadded message (CEK bytes), or null if padding is invalid
      */
-    private static byte[] oaepUnpad(byte[] em, String hashAlgo, int keyBitLen)
+    static byte[] oaepUnpad(byte[] em, String hashAlgo, int keyBitLen)
             throws GeneralSecurityException {
 
         MessageDigest md = MessageDigest.getInstance(hashAlgo);
@@ -289,7 +307,7 @@ public class HsmJweDecryptionHelper {
     /**
      * MGF1 Mask Generation Function (RFC 3447 B.2.1).
      */
-    private static byte[] mgf1(byte[] seed, int maskLen, MessageDigest md) {
+    static byte[] mgf1(byte[] seed, int maskLen, MessageDigest md) {
 
         int hLen = md.getDigestLength();
         int iterations = (maskLen + hLen - 1) / hLen;
@@ -314,7 +332,7 @@ public class HsmJweDecryptionHelper {
     /**
      * XOR two byte arrays of equal length.
      */
-    private static byte[] xor(byte[] a, byte[] b) {
+    static byte[] xor(byte[] a, byte[] b) {
 
         byte[] result = new byte[a.length];
         for (int i = 0; i < a.length; i++) {
