@@ -45,6 +45,7 @@ public class KeyStoreUtils {
      * - File-based key (RSAPrivateCrtKeyImpl) when HSM is not configured
      *
      * @return Key as an Object.
+     * @throws RuntimeException if key cannot be loaded from KeyStoreManager
      */
     public static Key getSigningKey() {
 
@@ -62,6 +63,8 @@ public class KeyStoreUtils {
                                 + localKey.getClass().getName());
                     } catch (Exception e) {
                         log.error("Error occurred while retrieving private key from KeyStoreManager", e);
+                        throw new RuntimeException("Failed to load signing key from KeyStoreManager. " +
+                                "Ensure keystore is properly configured.", e);
                     }
                 }
             }
