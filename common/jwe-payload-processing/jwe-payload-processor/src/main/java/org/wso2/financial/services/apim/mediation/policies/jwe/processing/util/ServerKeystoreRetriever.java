@@ -18,66 +18,35 @@
 
 package org.wso2.financial.services.apim.mediation.policies.jwe.processing.util;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.synapse.SynapseException;
-import org.wso2.carbon.base.ServerConfiguration;
 import org.wso2.carbon.core.util.KeyStoreManager;
-import org.wso2.financial.services.apim.mediation.policies.jwe.processing.constants.JwePayloadProcessingConstants;
 
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.security.Key;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
-import java.security.cert.CertificateException;
 
 /**
- * Utility to retrieve Server certificates.
- * Supports both file-based keystore and HSM (PKCS#11) via Carbon KeyStoreManager.
+ * Utility to retrieve Server certificates for JWE decryption.
+ * Uses Carbon KeyStoreManager which is HSM-aware and automatically handles
+ * both PKCS#11 (HSM) and file-based (JKS) keystores based on server configuration.
  */
 public class ServerKeystoreRetriever {
 
     private static final Log log = LogFactory.getLog(ServerKeystoreRetriever.class);
 
-    private KeyStore keyStore = null;
     private static final Object lock = new Object();
     static ServerKeystoreRetriever retriever;
 
     // Super tenant ID used for KeyStoreManager
     private static final int SUPER_TENANT_ID = -1234;
 
-    // Internal KeyStore Password (only used for file-based keystore).
-    private char[] keyStorePassword;
-
-    // Cached HSM private key (loaded once via KeyStoreManager)
-    private static volatile Key hsmPrivateKey;
-
-    // Flag indicating whether HSM is enabled
-    private final boolean hsmEnabled;
+    // Cached private key (loaded once via KeyStoreManager)
+    private volatile Key privateKey;
 
     /**
-     * Private Constructor of config parser.
+     * Private Constructor.
      */
     private ServerKeystoreRetriever() {
-
-        hsmEnabled = checkHSMEnabled();
-
-        if (!hsmEnabled) {
-            // File-based keystore path (original behavior)
-            String keyStoreLocation = ServerConfiguration.getInstance()
-                    .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_LOCATION_CONF_KEY);
-            String keyStorePasswordConfig = ServerConfiguration.getInstance()
-                    .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_PASS_CONF_KEY);
-            keyStore = loadKeyStore(keyStoreLocation, keyStorePasswordConfig);
-            keyStorePassword = keyStorePasswordConfig.toCharArray();
-            log.info("JWE ServerKeystoreRetriever initialized with file-based keystore.");
-        } else {
-            log.info("JWE ServerKeystoreRetriever initialized with HSM mode (KeyStoreManager).");
-        }
+        log.info("JWE ServerKeystoreRetriever initialized (HSM-aware via KeyStoreManager)");
     }
 
     /**
@@ -96,101 +65,38 @@ public class ServerKeystoreRetriever {
     }
 
     /**
-     * Check if HSM is enabled via server configuration.
-     *
-     * @return true if HSM is enabled
-     */
-    private static boolean checkHSMEnabled() {
-
-        String hsmEnabledStr = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
-                .getFirstProperty("Security.HSMKeyStore.Enabled");
-        boolean enabled = Boolean.parseBoolean(hsmEnabledStr);
-        if (log.isDebugEnabled()) {
-            log.debug("HSM Status Check: " + enabled + " (Raw value: " + hsmEnabledStr + ")");
-        }
-        return enabled;
-    }
-
-    /**
-     * Returns whether HSM is enabled.
-     *
-     * @return true if HSM is enabled
-     */
-    public boolean isHSMEnabled() {
-
-        return hsmEnabled;
-    }
-
-    /**
-     * Load the keystore when the location and password is provided.
-     *
-     * @param keyStoreLocation Location of the keystore
-     * @param keyStorePassword Keystore password
-     * @return Keystore as an object
-     */
-    public static KeyStore loadKeyStore(String keyStoreLocation, String keyStorePassword) {
-
-        KeyStore keyStore;
-
-        try (FileInputStream inputStream = new FileInputStream(keyStoreLocation)) {
-            keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            keyStore.load(inputStream, keyStorePassword.toCharArray());
-            return keyStore;
-        } catch (KeyStoreException e) {
-            throw new SynapseException("Error while retrieving aliases from keystore: " + keyStoreLocation, e);
-        } catch (IOException | CertificateException | NoSuchAlgorithmException e) {
-            throw new SynapseException("Error while loading keystore", e);
-        }
-    }
-
-    /**
      * Returns the private key for JWE decryption.
-     * When HSM is enabled, uses Carbon KeyStoreManager (HSM-aware).
-     * When HSM is not enabled, uses the file-based keystore (original behavior).
+     * KeyStoreManager is HSM-aware and will return:
+     * - PKCS#11 backed key (P11PrivateKey) when HSM is configured
+     * - File-based key (RSAPrivateCrtKeyImpl) when HSM is not configured
      *
-     * @param alias Alias of the key to retrieve (used only in file-based mode)
-     * @return Key The private key
+     * Uses double-checked locking for thread-safe lazy initialization.
+     *
+     * @param alias Alias of the signing key (not used when KeyStoreManager returns default key)
+     * @return Key The private key for JWE decryption, or null if key cannot be loaded
      */
     public Key getSigningKey(String alias) {
 
-        if (hsmEnabled) {
-            return getHSMPrivateKey();
-        }
-
-        // Original file-based keystore path
-        if (StringUtils.isNotBlank(alias)) {
-            try {
-                return keyStore.getKey(alias, keyStorePassword);
-            } catch (KeyStoreException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
-                throw new SynapseException("Unable to retrieve certificate", e);
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Returns the private key from KeyStoreManager (HSM-aware).
-     * Uses volatile double-checked locking for thread-safe lazy initialization.
-     *
-     * @return Key The HSM-backed private key
-     */
-    private Key getHSMPrivateKey() {
-
-        Key localKey = hsmPrivateKey;
+        Key localKey = privateKey;
         if (localKey == null) {
-            synchronized (ServerKeystoreRetriever.class) {
-                localKey = hsmPrivateKey;
+            synchronized (this) {
+                localKey = privateKey;
                 if (localKey == null) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Loading JWE decryption key from KeyStoreManager (HSM-aware)");
+                    }
                     try {
                         KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
                         localKey = keyStoreManager.getDefaultPrivateKey();
-                        hsmPrivateKey = localKey;
-                        log.info("JWE decryption key loaded from KeyStoreManager. Key type: "
-                                + localKey.getClass().getName());
+                        privateKey = localKey;
+                        if (localKey != null) {
+                            log.info("JWE decryption key loaded successfully. Key type: "
+                                    + localKey.getClass().getName());
+                        }
                     } catch (Exception e) {
-                        throw new SynapseException(
-                                "Unable to retrieve private key from KeyStoreManager for JWE decryption", e);
+                        log.error("Unable to retrieve private key from KeyStoreManager for JWE decryption", e);
+                        // Return null to maintain backward compatibility instead of throwing exception
+                        return null;
                     }
                 }
             }

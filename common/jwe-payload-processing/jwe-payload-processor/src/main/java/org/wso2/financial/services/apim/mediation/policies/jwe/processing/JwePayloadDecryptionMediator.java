@@ -107,13 +107,24 @@ public class JwePayloadDecryptionMediator extends AbstractMediator {
             EncryptedJWT parsedJwt = EncryptedJWT.parse(encryptedPayload.get());
             JWTClaimsSet decryptedClaimsSet;
 
-            if (keystoreRetriever.isHSMEnabled()) {
+            // Detect HSM by checking if key is P11PrivateKey (PKCS#11 backed)
+            boolean isHSMKey = privateKey.getClass().getName().contains("P11PrivateKey")
+                    || privateKey.getClass().getName().contains("P11Key");
+
+            if (isHSMKey) {
                 // HSM path: SunPKCS11 does not support RSA-OAEP Cipher padding, so we bypass
                 // Nimbus RSADecrypter and perform raw RSA in HSM + manual OAEP unpadding + AES-GCM
-                log.info("HSM enabled: Using custom JWE decryption (raw RSA in HSM + OAEP unpad).");
+                if (log.isDebugEnabled()) {
+                    log.debug("HSM key detected (" + privateKey.getClass().getName() 
+                            + "): Using custom JWE decryption (raw RSA in HSM + OAEP unpad).");
+                }
                 decryptedClaimsSet = HsmJweDecryptionHelper.decryptWithHSM(parsedJwt, (PrivateKey) privateKey);
             } else {
                 // Standard path: Use Nimbus RSADecrypter (original behavior)
+                if (log.isDebugEnabled()) {
+                    log.debug("Standard key detected (" + privateKey.getClass().getName() 
+                            + "): Using Nimbus RSADecrypter.");
+                }
                 RSADecrypter decrypter = new RSADecrypter((PrivateKey) privateKey);
                 parsedJwt.decrypt(decrypter);
                 decryptedClaimsSet = parsedJwt.getJWTClaimsSet();
