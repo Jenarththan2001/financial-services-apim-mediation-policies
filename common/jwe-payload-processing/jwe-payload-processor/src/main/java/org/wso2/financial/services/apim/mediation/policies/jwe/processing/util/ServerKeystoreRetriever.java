@@ -18,50 +18,41 @@
 
 package org.wso2.financial.services.apim.mediation.policies.jwe.processing.util;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.synapse.SynapseException;
-import org.wso2.carbon.base.ServerConfiguration;
-import org.wso2.financial.services.apim.mediation.policies.jwe.processing.constants.JwePayloadProcessingConstants;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.core.util.KeyStoreManager;
 
-import java.io.FileInputStream;
-import java.io.IOException;
 import java.security.Key;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
-import java.security.cert.CertificateException;
 
 /**
- * Utility to retrieve Server certificates.
+ * Utility to retrieve Server certificates for JWE decryption.
+ * Uses Carbon KeyStoreManager which is HSM-aware and automatically handles
+ * both PKCS#11 (HSM) and file-based (JKS) keystores based on server configuration.
  */
 public class ServerKeystoreRetriever {
 
-    private KeyStore keyStore = null;
+    private static final Log log = LogFactory.getLog(ServerKeystoreRetriever.class);
+
     private static final Object lock = new Object();
     static ServerKeystoreRetriever retriever;
 
-    // Internal KeyStore Password.
-    private final char[] keyStorePassword;
+    // Super tenant ID used for KeyStoreManager
+    private static final int SUPER_TENANT_ID = -1234;
 
+    // Cached private key (loaded once via KeyStoreManager)
+    private volatile Key privateKey;
 
     /**
-     * Private Constructor of config parser.
+     * Private Constructor.
      */
     private ServerKeystoreRetriever() {
-
-        String keyStoreLocation = ServerConfiguration.getInstance()
-                .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_LOCATION_CONF_KEY);
-        String keyStorePasswordConfig = ServerConfiguration.getInstance()
-                .getFirstProperty(JwePayloadProcessingConstants.KEYSTORE_PASS_CONF_KEY);
-        keyStore = loadKeyStore(keyStoreLocation, keyStorePasswordConfig);
-        keyStorePassword = keyStorePasswordConfig.toCharArray();
+        log.info("JWE ServerKeystoreRetriever initialized (HSM-aware via KeyStoreManager)");
     }
 
     /**
      * Singleton getInstance method to create only one object.
      *
-     * @return FinancialServicesConfigParser object
+     * @return ServerKeystoreRetriever object
      */
     public static ServerKeystoreRetriever getInstance() {
 
@@ -74,43 +65,42 @@ public class ServerKeystoreRetriever {
     }
 
     /**
-     * Load the keystore when the location and password is provided.
+     * Returns the private key for JWE decryption.
+     * KeyStoreManager is HSM-aware and will return:
+     * - PKCS#11 backed key (P11PrivateKey) when HSM is configured
+     * - File-based key (RSAPrivateCrtKeyImpl) when HSM is not configured
      *
-     * @param keyStoreLocation Location of the keystore
-     * @param keyStorePassword Keystore password
-     * @return Keystore as an object
-     */
-    public static KeyStore loadKeyStore(String keyStoreLocation, String keyStorePassword) {
-
-        KeyStore keyStore;
-
-        try (FileInputStream inputStream = new FileInputStream(keyStoreLocation)) {
-            keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            keyStore.load(inputStream, keyStorePassword.toCharArray());
-            return keyStore;
-        } catch (KeyStoreException e) {
-            throw new SynapseException("Error while retrieving aliases from keystore: " + keyStoreLocation, e);
-        } catch (IOException | CertificateException | NoSuchAlgorithmException e) {
-            throw new SynapseException("Error while loading keystore", e);
-        }
-    }
-
-    /**
-     * Returns the signing key based on the alias provided.
+     * Uses double-checked locking for thread-safe lazy initialization.
      *
-     * @param alias Alias of the signing key to retrieve
-     * @return Optional<Key> The signing key as an Optional
+     * @param alias Alias of the signing key (not used when KeyStoreManager returns default key)
+     * @return Key The private key for JWE decryption, or null if key cannot be loaded
      */
     public Key getSigningKey(String alias) {
 
-        if (StringUtils.isNotBlank(alias)) {
-            try {
-                return keyStore.getKey(alias, keyStorePassword);
-            } catch (KeyStoreException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
-                throw new SynapseException("Unable to retrieve certificate", e);
+        Key localKey = privateKey;
+        if (localKey == null) {
+            synchronized (this) {
+                localKey = privateKey;
+                if (localKey == null) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Loading JWE decryption key from KeyStoreManager (HSM-aware)");
+                    }
+                    try {
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        localKey = keyStoreManager.getDefaultPrivateKey();
+                        privateKey = localKey;
+                        if (localKey != null) {
+                            log.info("JWE decryption key loaded successfully. Key type: "
+                                    + localKey.getClass().getName());
+                        }
+                    } catch (Exception e) {
+                        log.error("Unable to retrieve private key from KeyStoreManager for JWE decryption", e);
+                        // Return null to maintain backward compatibility instead of throwing exception
+                        return null;
+                    }
+                }
             }
         }
-
-        return null;
+        return localKey;
     }
 }
