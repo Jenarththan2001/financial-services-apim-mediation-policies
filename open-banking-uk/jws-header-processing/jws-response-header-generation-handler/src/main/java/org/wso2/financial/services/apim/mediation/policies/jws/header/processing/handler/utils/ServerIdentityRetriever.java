@@ -21,6 +21,7 @@ package org.wso2.financial.services.apim.mediation.policies.jws.header.processin
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.SynapseException;
+import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.core.util.KeyStoreManager;
 
 import java.security.Key;
@@ -37,9 +38,6 @@ import java.util.Optional;
 public class ServerIdentityRetriever {
 
     private static final Log log = LogFactory.getLog(ServerIdentityRetriever.class);
-
-    // Super tenant ID used for KeyStoreManager
-    private static final int SUPER_TENANT_ID = -1234;
 
     // Cached signing key (loaded once)
     private static volatile Key signingKey;
@@ -62,12 +60,13 @@ public class ServerIdentityRetriever {
                 if (localKey == null) {
                     log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
                     try {
-                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);
                         localKey = keyStoreManager.getDefaultPrivateKey();
                         signingKey = localKey;
 
-                        log.info("JWS signing key loaded successfully. Key type: " +
-                                localKey.getClass().getName());
+                        log.info("JWS signing key loaded successfully for tenant: " + tenantId
+                                + ". Key type: " + localKey.getClass().getName());
                     } catch (Exception e) {
                         log.error("Error occurred while retrieving private key from KeyStoreManager", e);
                         throw new SynapseException("Unable to retrieve signing key from KeyStoreManager", e);
@@ -88,7 +87,8 @@ public class ServerIdentityRetriever {
     public static Certificate getCertificate(String alias) throws KeyStoreException {
 
         try {
-            KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+            int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
+            KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);
             KeyStore keyStore = keyStoreManager.getPrimaryKeyStore();
             return keyStore.getCertificate(alias);
         } catch (Exception e) {
