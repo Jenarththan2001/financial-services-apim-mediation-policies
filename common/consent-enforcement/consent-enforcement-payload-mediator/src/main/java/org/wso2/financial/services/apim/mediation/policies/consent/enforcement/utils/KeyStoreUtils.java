@@ -20,6 +20,7 @@ package org.wso2.financial.services.apim.mediation.policies.consent.enforcement.
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.core.util.KeyStoreManager;
 
 import java.security.Key;
@@ -32,9 +33,6 @@ import java.security.Key;
 public class KeyStoreUtils {
 
     private static final Log log = LogFactory.getLog(KeyStoreUtils.class);
-
-    // Super tenant ID used for KeyStoreManager
-    private static final int SUPER_TENANT_ID = -1234;
 
     private static volatile Key key;
 
@@ -56,11 +54,12 @@ public class KeyStoreUtils {
                 if (localKey == null) {
                     log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
                     try {
-                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);
                         localKey = keyStoreManager.getDefaultPrivateKey();
                         key = localKey;
-                        log.info("Signing key loaded successfully. Key type: "
-                                + localKey.getClass().getName());
+                        log.info("Signing key loaded successfully for tenant: " + tenantId
+                                + ". Key type: " + localKey.getClass().getName());
                     } catch (Exception e) {
                         log.error("Error occurred while retrieving private key from KeyStoreManager", e);
                         throw new RuntimeException("Failed to load signing key from KeyStoreManager. " +
