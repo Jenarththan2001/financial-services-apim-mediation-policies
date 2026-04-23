@@ -20,6 +20,7 @@ package org.wso2.financial.services.apim.mediation.policies.jwe.processing.util;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.core.util.KeyStoreManager;
 
 import java.security.Key;
@@ -35,9 +36,6 @@ public class ServerKeystoreRetriever {
 
     private static final Object lock = new Object();
     static ServerKeystoreRetriever retriever;
-
-    // Super tenant ID used for KeyStoreManager
-    private static final int SUPER_TENANT_ID = -1234;
 
     // Cached private key (loaded once via KeyStoreManager)
     private volatile Key privateKey;
@@ -86,12 +84,13 @@ public class ServerKeystoreRetriever {
                         log.debug("Loading JWE decryption key from KeyStoreManager (HSM-aware)");
                     }
                     try {
-                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(SUPER_TENANT_ID);
+                        int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
+                        KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);
                         localKey = keyStoreManager.getDefaultPrivateKey();
                         privateKey = localKey;
                         if (localKey != null) {
-                            log.info("JWE decryption key loaded successfully. Key type: "
-                                    + localKey.getClass().getName());
+                            log.info("JWE decryption key loaded successfully for tenant: " + tenantId
+                                    + ". Key type: " + localKey.getClass().getName());
                         }
                     } catch (Exception e) {
                         log.error("Unable to retrieve private key from KeyStoreManager for JWE decryption", e);
