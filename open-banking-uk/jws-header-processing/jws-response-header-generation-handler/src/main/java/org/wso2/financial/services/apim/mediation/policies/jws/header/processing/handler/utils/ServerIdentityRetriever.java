@@ -58,7 +58,7 @@ public class ServerIdentityRetriever {
             synchronized (ServerIdentityRetriever.class) {
                 localKey = signingKey;
                 if (localKey == null) {
-                    log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
+                    log.debug("Initializing signing key from KeyStoreManager");
                     try {
                         int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
                         KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);

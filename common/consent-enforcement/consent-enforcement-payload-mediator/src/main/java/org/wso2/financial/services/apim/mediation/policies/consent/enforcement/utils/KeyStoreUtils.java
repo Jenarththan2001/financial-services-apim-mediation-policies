@@ -27,8 +27,7 @@ import java.security.Key;
 
 /**
  * Utility class for managing the keystore and retrieving the signing key.
- * Uses Carbon KeyStoreManager which is HSM-aware - returns PKCS#11 backed
- * keys when HSM is configured, or file-based keys otherwise.
+ * Uses Carbon KeyStoreManager to retrieve the configured signing key for the tenant.
  */
 public class KeyStoreUtils {
 
@@ -37,13 +36,10 @@ public class KeyStoreUtils {
     private static volatile Key key;
 
     /**
-     * Method to obtain signing key using Carbon KeyStoreManager.
-     * KeyStoreManager is HSM-aware and will return:
-     * - PKCS#11 backed key (P11PrivateKey) when HSM is configured
-     * - File-based key (RSAPrivateCrtKeyImpl) when HSM is not configured
+     * Method to obtain the signing key using Carbon KeyStoreManager.
      *
      * @return Key as an Object.
-     * @throws RuntimeException if key cannot be loaded from KeyStoreManager
+     * @throws RuntimeException if the key cannot be loaded from KeyStoreManager
      */
     public static Key getSigningKey() {
 
@@ -52,7 +48,7 @@ public class KeyStoreUtils {
             synchronized (KeyStoreUtils.class) {
                 localKey = key;
                 if (localKey == null) {
-                    log.debug("Initializing signing key from KeyStoreManager (HSM-aware)");
+                    log.debug("Initializing signing key from KeyStoreManager");
                     try {
                         int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
                         KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);

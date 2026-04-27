@@ -44,7 +44,7 @@ public class ServerKeystoreRetriever {
      * Private Constructor.
      */
     private ServerKeystoreRetriever() {
-        log.info("JWE ServerKeystoreRetriever initialized (HSM-aware via KeyStoreManager)");
+        log.info("JWE ServerKeystoreRetriever initialized via KeyStoreManager");
     }
 
     /**
@@ -81,7 +81,7 @@ public class ServerKeystoreRetriever {
                 localKey = privateKey;
                 if (localKey == null) {
                     if (log.isDebugEnabled()) {
-                        log.debug("Loading JWE decryption key from KeyStoreManager (HSM-aware)");
+                        log.debug("Loading JWE decryption key from KeyStoreManager");
                     }
                     try {
                         int tenantId = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantId();
