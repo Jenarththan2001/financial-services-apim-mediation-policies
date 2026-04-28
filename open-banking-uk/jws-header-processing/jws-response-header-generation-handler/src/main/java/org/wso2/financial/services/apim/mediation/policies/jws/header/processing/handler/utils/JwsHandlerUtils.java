@@ -370,6 +370,7 @@ public class JwsHandlerUtils {
     static Provider getHSMProvider() {
 
         for (Provider p : Security.getProviders()) {
+            // Matches configured PKCS#11 provider while safely ignoring the unconfigured base "SunPKCS11" provider.
             if (p.getName().startsWith(SUN_PKCS11_PREFIX)) {
                 return p;
             }
